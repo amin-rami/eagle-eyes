@@ -1,0 +1,86 @@
+include:
+  - file: .rule-template.yml
+    project: zarebin-public/cicd-template
+  - file: .scan-template.yml
+    project: zarebin-public/cicd-template
+
+stages:
+  - pre_build
+  - build
+  - scan
+  - deploy
+
+check_lint:
+  stage: pre_build
+  image: "docker.mci.dev/python:3.11"
+  only:
+    - merge_requests
+    - dev
+  before_script:
+    - pip install --index-url https://repo.mci.dev/artifactory/api/pypi/pypi/simple --upgrade pip
+    - pip install --index-url https://repo.mci.dev/artifactory/api/pypi/pypi/simple flake8
+  script:
+    - flake8
+
+run_tests:
+  stage: pre_build
+  image: "docker.mci.dev/python:3.11"
+  services:
+    - name: "docker.mci.dev/postgres:latest"
+      alias: postgres
+  variables:
+    POSTGRES_DB: eagle_eyes
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+    POSTGRES_HOST_AUTH_METHOD: trust
+    TEST_MODE: "true"
+  only:
+    - merge_requests
+    - dev
+  before_script:
+    - pip install -r requirements.txt
+    - cp eagle_eyes/.env.example eagle_eyes/.env
+    - python manage.py migrate
+  script:
+    - python manage.py test eagle_eyes --failfast
+
+dev_build:
+  stage: build
+  only:
+    refs:
+      - dev
+  image: "hamravesh.hamdocker.ir/public/darkube-cli:v1.1"
+  script:
+    - "export IMAGE=docker.mci.dev/darkube/mci/gfs/eagle-eyes"
+    - "darkube build -f ./Dockerfile --push -t $IMAGE:$CI_COMMIT_SHORT_SHA -t $IMAGE:$CI_COMMIT_REF_SLUG
+      --workdir . --build-arg CICD_REPO_USER=$CICD_REPO_USER --build-arg CICD_REPO_PASS=$CICD_REPO_PASS"
+
+stage_build:
+  stage: build
+  extends:
+    - .staging_build
+  script:
+    - "export IMAGE=docker.mci.dev/darkube/mci/gfs/eagle-eyes"
+    - "darkube build -f ./Dockerfile --push -t $IMAGE:$CI_COMMIT_TAG -t $IMAGE:$CI_COMMIT_REF_SLUG
+      --workdir . --build-arg CICD_REPO_USER=$CICD_REPO_USER --build-arg CICD_REPO_PASS=$CICD_REPO_PASS"
+
+dev_deploy:
+  stage: deploy
+  only:
+    refs:
+      - dev
+  trigger:
+    branch: main
+    project: mse/gfs/gfs-ops
+  variables:
+    APP_NAME: eagle-eyes,eagle-eyes-event-processor,game-processor,eagle-eyes-general-processor
+    CHART_YAML_PATH: values.yaml
+    ENV: dev
+    IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+
+container_scan:
+  stage: scan
+  extends:
+    - .container_scan
+  variables:
+    IMAGE: docker.mci.dev/darkube/mci/gfs/eagle-eyes
